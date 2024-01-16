@@ -14,12 +14,27 @@ import {
 	CompletionItemKind,
 	TextDocumentPositionParams,
 	TextDocumentSyncKind,
-	InitializeResult
+	InitializeResult,
+	Range
 } from 'vscode-languageserver/node';
+
+import {
+	CodeAction,
+	CodeActionKind,
+	CodeActionParams
+} from 'vscode-languageserver';
 
 import {
 	TextDocument
 } from 'vscode-languageserver-textdocument';
+
+import phrases from './replace_patterns.json';
+interface Phrases {
+    [key: string]: string;
+}
+const phrasesData: Phrases = phrases as Phrases;
+
+
 
 // Create a connection for the server, using Node's IPC as a transport.
 // Also include all preview / proposed LSP features.
@@ -55,7 +70,8 @@ connection.onInitialize((params: InitializeParams) => {
 			// Tell the client that this server supports code completion.
 			completionProvider: {
 				resolveProvider: true
-			}
+			},
+			codeActionProvider: true
 		}
 	};
 	if (hasWorkspaceFolderCapability) {
@@ -134,52 +150,73 @@ documents.onDidChangeContent(change => {
 	validateTextDocument(change.document);
 });
 
+// Helper function to escape regular expression characters
+function escapeRegExp(text: string): string {
+	return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 async function validateTextDocument(textDocument: TextDocument): Promise<void> {
 	// In this simple example we get the settings for every validate run.
 	const settings = await getDocumentSettings(textDocument.uri);
+	const content = textDocument.getText();
 
-	// The validator creates diagnostics for all uppercase words length 2 and more
-	const text = textDocument.getText();
-	const pattern = /\b[A-Z]{2,}\b/g;
-	let m: RegExpExecArray | null;
+	let diagnostics: Diagnostic[] = [];
+	console.log("Looking for patterns")
+	for (const [phrase, replacement] of Object.entries(phrasesData)) {
+		const escapedPhrase = escapeRegExp(phrase);
+		const regex = new RegExp(`\\b${escapedPhrase}\\b`, 'g');
 
-	let problems = 0;
-	const diagnostics: Diagnostic[] = [];
-	while ((m = pattern.exec(text)) && problems < settings.maxNumberOfProblems) {
-		problems++;
-		const diagnostic: Diagnostic = {
-			severity: DiagnosticSeverity.Warning,
-			range: {
-				start: textDocument.positionAt(m.index),
-				end: textDocument.positionAt(m.index + m[0].length)
-			},
-			message: `${m[0]} is all uppercase.`,
-			source: 'ex'
-		};
-		if (hasDiagnosticRelatedInformationCapability) {
-			diagnostic.relatedInformation = [
-				{
-					location: {
-						uri: textDocument.uri,
-						range: Object.assign({}, diagnostic.range)
-					},
-					message: 'Spelling matters'
-				},
-				{
-					location: {
-						uri: textDocument.uri,
-						range: Object.assign({}, diagnostic.range)
-					},
-					message: 'Particularly for names'
-				}
-			];
+		let match: RegExpExecArray | null;
+		while ((match = regex.exec(content)) !== null) {
+			const start = textDocument.positionAt(match.index);
+			const end = textDocument.positionAt(match.index + match[0].length);
+			const range = Range.create(start, end);
+
+			const diagnostic: Diagnostic = {
+				severity: DiagnosticSeverity.Warning,
+				range: range,
+				message: `Consider using "${replacement}" instead of "${match[0]}"`,
+				source: 'ex',
+				code: 'ReplacePhrase', // A unique code for this type of diagnostic
+				data: match[0] // Pass the original phrase to identify it in the code action
+			};
+			diagnostics.push(diagnostic);
 		}
-		diagnostics.push(diagnostic);
 	}
-
-	// Send the computed diagnostics to VSCode.
+	// Sending the computed diagnostics to VSCode.
 	connection.sendDiagnostics({ uri: textDocument.uri, diagnostics });
 }
+
+connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
+    const diagnostics = params.context.diagnostics;
+    const codeActions: CodeAction[] = [];
+
+    diagnostics.forEach(diagnostic => {
+        if (diagnostic.code === 'ReplacePhrase') { // Ensure this matches the code set in the diagnostic
+            const phraseKey = diagnostic.data as string; // Cast to string
+	        const replacement = phrasesData[phraseKey]; // Access using phrasesData
+	
+			const fix = CodeAction.create(
+                `Replace with "${replacement}"`, // Title
+                { // Command or WorkspaceEdit
+                    changes: {
+                        [params.textDocument.uri]: [
+                            { // TextEdit
+                                range: diagnostic.range,
+                                newText: replacement
+                            }
+                        ]
+                    }
+                },
+                CodeActionKind.QuickFix
+            );
+            codeActions.push(fix);
+        }
+    });
+
+    return codeActions;
+});
+
 
 connection.onDidChangeWatchedFiles(_change => {
 	// Monitored files have change in VSCode

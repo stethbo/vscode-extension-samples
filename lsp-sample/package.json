@@ -17,7 +17,8 @@
 		"vscode": "^1.75.0"
 	},
 	"activationEvents": [
-		"onLanguage:plaintext"
+		"onLanguage:markdown",
+		"workspaceContains:*.md"
 	],
 	"main": "./client/out/extension",
 	"contributes": {
